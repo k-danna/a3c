@@ -1,0 +1,9 @@
+
+TO RUN:
+    make sure docker.app is running and connected
+
+INFO
+
+    Asynchronous advantage actor-critic
+    https://arxiv.org/pdf/1602.01783.pdf
+
