@@ -95,6 +95,12 @@ class A3C_Net(object):
                 #value input
                 self.value_in = tf.placeholder(tf.float32, [batchsize],
                         name='value_in')
+                #reward input
+                self.reward_in = tf.placeholder(tf.float32, [batchsize],
+                        name='reward_in')
+                #advantage input
+                self.advantage_in = tf.placeholder(tf.float32, [batchsize],
+                        name='advantage_in')
 
             #3x3 conv2d, relu, 2x2 maxpool
             with tf.name_scope('conv_pool'):
@@ -157,13 +163,12 @@ class A3C_Net(object):
                 #functions from openai universe starter agent
                 #gradient = log (policy) * (v - v_pred) + beta * entropy
             with tf.name_scope('loss'):
-                advantage = self.v_pred - self.value_in
-                
                 #value loss
-                v_loss  = 0.5 * tf.reduce_sum(tf.square(advantage))
+                v_loss  = 0.5 * tf.reduce_sum(tf.square(
+                        self.v_pred - self.reward_in))
                 
                 #policy loss
-                a_loss = - tf.reduce_sum(a_pred * advantage)
+                a_loss = - tf.reduce_sum(a_pred * self.advantage_in)
 
                 #entropy
                 entropy = - tf.reduce_sum(self.a_prob * a_logprob)
@@ -226,11 +231,11 @@ class A3C_Net(object):
                     tf.summary.scalar('a_loss', a_loss),
                     #tf.summary.scalar('value_pred', self.v_pred),
                     tf.summary.scalar('value_max', tf.reduce_max(
-                            self.value_in)),
+                            self.v_pred)),
                     tf.summary.scalar('value_min', tf.reduce_min(
-                            self.value_in)),
+                            self.v_pred)),
                     tf.summary.scalar('value_avg', tf.reduce_mean(
-                            self.value_in)),
+                            self.v_pred)),
                 ]
 
             #tensorboard data
@@ -292,12 +297,26 @@ class A3C_Net(object):
             rewards.append(int(reward))
             values.append(value)
             dones.append(int(done)) #convert from bool
+
+        #used for advantage calc
+        r_extend = np.asarray(rewards + [0])
+
+        #convert to np arrays
         imgs = np.asarray(imgs).astype(np.float32)
         actions = np.asarray(actions).astype(np.int32)
         rewards = np.asarray(rewards).astype(np.float32)
         values = np.asarray(values).astype(np.float32)
         dones = np.asarray(dones).astype(np.int32)
-        return imgs, actions, rewards, values, dones
+        
+        #calc advantages
+            #adv func taken from openai universe starter agent
+            #generalized advantage estimation from
+                #https://arxiv.org/abs/1506.02438
+        gamma = 0.99
+        advantages = rewards + gamma * r_extend[1:] - r_extend[:-1]
+        advantages = np.asarray(advantages).astype(np.float32)
+
+        return imgs, actions, rewards, values, advantages, dones
 
     def get_weights(self):
         #need to convert tensors to numpy arrays
@@ -326,13 +345,16 @@ class A3C_Net(object):
                 step = self.get_step()
 
     def calc_gradients(self, batch):
-        imgs, actions, rewards, values, _ = self.process_batch(batch)
+        imgs, actions, rewards, values, advantages, _ = self.process_batch(
+                batch)
         loss, gradients, summary, step = self.sess.run([self.loss, 
                 self.gradients, self.summaries, self.inc_step], 
                 feed_dict={
                     self.state_in: imgs, 
                     self.action_in: actions, 
+                    self.reward_in: rewards, 
                     self.value_in: values, 
+                    self.advantage_in: advantages, 
                     self.keep_prob: 0.5})
         #step = self.step_count.eval(session=self.sess)
         #print ('%s step: %s' % (self.scope, step))
@@ -425,16 +447,20 @@ class A3C_Worker(object):
     def pull_weights(self):
         self.local_net.put_weights(self.global_net.get_weights())
 
-    def test(self, env, episodes=100, records=4, out_dir='./records'):
+    def test(self, env, episodes=100, records=4, out_dir='./logs/records'):
         #wrap env, record x episodes and eval scores
 
         #wrapper that records episodes
-        #vc = lambda n: n in [int(x) for x in np.linspace(episodes, 0, 
-        #        records)] #func that indicates which episodes to record
-        #env = wrappers.Monitor(env, directory=out_dir, force=True, 
-        #        video_callable=vc)
+        import gym
+        vc = lambda n: n in [int(x) for x in np.linspace(episodes, 0, 
+                records)] #func that indicates which episodes to record
+        env = gym.wrappers.Monitor(env, directory=out_dir, 
+                force=True, video_callable=vc)
 
-        #FIXME: play for x episodes
+        #FIXME: pull weights from global before testing
+        self.pull_weights()
+
+        #play for x episodes
         stats = {}
         stats['steps'] = []
         for i in range(episodes):

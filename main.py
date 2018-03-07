@@ -19,9 +19,9 @@ def main():
     global_train_steps = 3000
     test = True
     env_name = 'CartPole-v0'
+    #env_name = 'Pendulum-v0'
     #env_name = 'Pong-v0'
     #env_name = 'SpaceInvaders-v0'
-    #env_name = 'Pendulum-v0'
     #env_name = 'FetchReach-v0'
 
     #env = gym.wrappers.Monitor(env, directory='./logs', force=True, 
