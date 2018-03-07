@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#DEBUG: starts every session in clean state
+echo 'cleaning state'
+rm -rf ./logs
+
+#run the program
+    #to run without sudo 'sudo -u mainuser [cmd]' (will break throttle)
+echo 'running the program'
+./main.py &
+
+#sleep while program initializes
+sleep 60
+
+#throttle a process by pid
+echo 'throttling to 25%'
+cputhrottle $! 50 &
+
+#start up tensorboard for visualization
+    #localhost:6006 to view
+echo 'opening tensorboard'
+tensorboard --logdir="./logs"
+

@@ -1,0 +1,11 @@
+#!/bin/bash
+
+#clean tensorboard logs
+rm -rf ./logs
+
+#run graph
+main.py
+
+#run tensorboard
+tensorboard --logdir='./logs'
+

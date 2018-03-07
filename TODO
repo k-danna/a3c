@@ -1,0 +1,14 @@
+
+better GLOBAL summary scalars (reward, loss, etc)
+
+save weights, load weights on startup
+
+add timing information (length of training, testing, initializing, etc)
+
+ensure model is correct
+    value_in vs reward_in?
+    summed rewards inputs??
+    advantage discount filter
+
+find and fix illegal instruction error
+
