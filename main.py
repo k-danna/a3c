@@ -15,8 +15,8 @@ from a3c import A3C_Worker, A3C_Net
 def main():
     
     #training vars
-    worker_num = 2
-    global_train_steps = 100
+    worker_num = 4
+    global_train_steps = 3000
     test = True
     env_name = 'CartPole-v0'
     #env_name = 'Pong-v0'
