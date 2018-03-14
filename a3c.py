@@ -4,7 +4,9 @@ from queue import Queue
 import random
 import tensorflow as tf
 import numpy as np
-
+import pandas as pd
+import scipy.signal
+import gym
 
 #FIXME: move these to the net
 #some quick wrapper methods for the state
@@ -27,7 +29,7 @@ def process_state(state):
     elif dims == 1:
         #convert to a 2d square 'image'
         if not state.shape[0] % 2 == 0:
-            state = state.append(0.0) #pad
+            state = np.append(state, 0.0) #pad
         w = int(state.shape[0] / 2)
         state = state.reshape((w, w, 1))
     
@@ -44,8 +46,8 @@ def process_state(state):
 def get_initial_state(env):
     return process_state(env.reset())
 
-def get_action_space(env):
-    return env.action_space
+def get_num_actions(env):
+    return env.action_space.n
 
 def get_successor_state(env, action):
     next_state, reward, done, _ = env.step(action)
@@ -55,11 +57,12 @@ def get_successor_state(env, action):
 #the prediction model
 
 class A3C_Net(object):
-    def __init__(self, env, scope, sess, path='', seed=42):
+    def __init__(self, env, scope, sess, path='', seed=42, batchsize=None):
         self.path = path
         self.seed = seed
         self.scope = scope
         self.sess = sess
+        self.env = env
 
         #trained for x batches
         self.steps = 0
@@ -73,7 +76,7 @@ class A3C_Net(object):
 
         #spaceinvaders input is (210, 160, 3)
         height, width, channels = get_initial_state(env).shape
-        n_actions = get_action_space(env).n
+        n_actions = get_num_actions(env)
 
         #ensure local copies of the net
         with tf.name_scope(self.scope):
@@ -81,7 +84,6 @@ class A3C_Net(object):
             #preprocess raw inputs
             with tf.name_scope('preprocess_input'):
                 #rgb input to square dimensions
-                batchsize = None #None #FIXME: hardcoded value
                 self.state_in = tf.placeholder(tf.float32, 
                         [batchsize, height, width, channels], 
                         name='state_in')
@@ -106,8 +108,7 @@ class A3C_Net(object):
             with tf.name_scope('conv_pool'):
                 #filter shape = [height, width, in_channels, 
                         #out_channels]
-                #FIXME: out_channels hardcoded
-                out_channels = 32
+                out_channels = 32 #FIXME: out_channels hardcoded
                 filter_shape = [3, 3, channels, out_channels]
                 conv_w = tf.Variable(tf.truncated_normal(filter_shape, 
                         stddev=0.1), name='weight')
@@ -135,7 +136,6 @@ class A3C_Net(object):
                         shape=[n]), name='bias')
 
                 fc_relu = tf.nn.relu(tf.matmul(flat, fc_w) + fc_b)
-                #pool2 = tf.reshape() #flatten
                 self.keep_prob = tf.placeholder(tf.float32)
                 drop = tf.nn.dropout(fc_relu, self.keep_prob)
 
@@ -164,8 +164,8 @@ class A3C_Net(object):
                 #gradient = log (policy) * (v - v_pred) + beta * entropy
             with tf.name_scope('loss'):
                 #value loss
-                v_loss  = 0.5 * tf.reduce_sum(tf.square(
-                        self.v_pred - self.reward_in))
+                v_loss = 0.5 * tf.reduce_sum(tf.square(
+                        self.reward_in - self.v_pred))
                 
                 #policy loss
                 a_loss = - tf.reduce_sum(a_pred * self.advantage_in)
@@ -220,22 +220,17 @@ class A3C_Net(object):
                 op_list = [v.assign(w) for v,w in vars_list]
                 self.put_vars = tf.group(*op_list)
 
-                #self.sync = tf.group(*[v1.assign(v2) for v1, v2 in 
-                        #zip(pi.var_list, self.network.var_list)])
-
             #tensorboard visualization
             with tf.name_scope('summaries'):
                 all_summaries = [
-                    tf.summary.scalar('loss', self.loss),
-                    tf.summary.scalar('v_loss', v_loss),
-                    tf.summary.scalar('a_loss', a_loss),
-                    #tf.summary.scalar('value_pred', self.v_pred),
-                    tf.summary.scalar('value_max', tf.reduce_max(
+                    tf.summary.scalar('0_loss', self.loss),
+                    tf.summary.scalar('1_v_loss', v_loss),
+                    tf.summary.scalar('2_a_loss', a_loss),
+                    tf.summary.scalar('3_v_pred', tf.reduce_mean(
                             self.v_pred)),
-                    tf.summary.scalar('value_min', tf.reduce_min(
-                            self.v_pred)),
-                    tf.summary.scalar('value_avg', tf.reduce_mean(
-                            self.v_pred)),
+                    tf.summary.scalar('4_entropy', entropy),
+                    tf.summary.scalar('5_reward_diff_sum', tf.reduce_sum(
+                            self.v_pred - self.reward_in)),
                 ]
 
             #tensorboard data
@@ -282,7 +277,13 @@ class A3C_Net(object):
             tf.reduce_sum()
         '''
 
-    def process_batch(self, batch):
+    def discount(self, arr, gamma):
+        #FIXME: this is taken directly from starter agent
+        #a = scipy.signal.lfilter([1], [1, -gamma], arr[::-1], axis=0)
+        #return a[::-1]
+        return arr
+
+    def process_batch(self, batch, gamma=0.99):
         #FIXME: this is dumb, move to using an object to store batch
         #split batch 
         imgs = []
@@ -298,8 +299,14 @@ class A3C_Net(object):
             values.append(value)
             dones.append(int(done)) #convert from bool
 
-        #used for advantage calc
-        r_extend = np.asarray(rewards + [0])
+        #extend rewards and values to be discounted
+            #note the extension is removed after discount
+        v = 0 if dones[-1] == 0 else values[-1]
+        r_extend = np.asarray(rewards + [v])
+        v_extend = np.asarray(values + [v])
+        
+        #discount rewards
+        rewards = self.discount(r_extend, gamma)[:-1]
 
         #convert to np arrays
         imgs = np.asarray(imgs).astype(np.float32)
@@ -307,13 +314,15 @@ class A3C_Net(object):
         rewards = np.asarray(rewards).astype(np.float32)
         values = np.asarray(values).astype(np.float32)
         dones = np.asarray(dones).astype(np.int32)
-        
+
         #calc advantages
             #adv func taken from openai universe starter agent
-            #generalized advantage estimation from
+            #it is the generalized advantage estimation from
                 #https://arxiv.org/abs/1506.02438
-        gamma = 0.99
-        advantages = rewards + gamma * r_extend[1:] - r_extend[:-1]
+        advantages = rewards + gamma * v_extend[1:] - v_extend[:-1]
+
+        #discount advantages and convert to np.array
+        advantages = self.discount(advantages, gamma)[:-1]
         advantages = np.asarray(advantages).astype(np.float32)
 
         return imgs, actions, rewards, values, advantages, dones
@@ -362,7 +371,7 @@ class A3C_Net(object):
 
         return gradients
 
-    def get_action_value(self, state):
+    def get_action_value(self, state, keep_prob=1.0, epsilon=0.14):
         #FIXME: choose action according to policy
             #choose best action with probability that varies based on
             #how close the highest rewards are
@@ -370,14 +379,18 @@ class A3C_Net(object):
                 #otherwise low chance to explore, choose best always
                 #measure entropy...
         #epsilon = (% based on top_k values)
-        epsilon = 0.14
             #actions,stddev = sess.run(...)
                 #run a top_k tensor and calc the stddev?
-            #choose argmax with prob 1-epsilon
-            #choose random with prob epsilon
-
         action, value = self.sess.run([self.a_prob, self.v_pred],
-                feed_dict={self.state_in: [state], self.keep_prob: 1.0})
+                feed_dict={self.state_in: [state], 
+                self.keep_prob: keep_prob})
+
+        #choose argmax with prob 1-epsilon
+        #choose random with prob epsilon
+        if np.random.random_sample() < epsilon:
+            return np.random.randint(0, 
+                    get_num_actions(self.env)), value[0][0]
+
         return np.argmax(action[0]), value[0][0]
 
     def get_step(self):
@@ -394,24 +407,15 @@ class A3C_Worker(object):
         self.global_net = global_net
         self.local_net = local_net
         self.pull_weights()
-
         self.update_interval = 20
 
     def train(self, env, global_step_max=10):
-        #train for specified number of steps
-        #t = self.global_net.get_step()
-        #t_max = steps + t
         batch = []
-
         state = get_initial_state(env)
-
         while self.global_net.get_step() < global_step_max:
-            action, value = self.local_net.get_action_value(state)
+            action, value = self.local_net.get_action_value(state, 0.5)
             next_state, reward, done = get_successor_state(env, action)
             reward = 0 if done else reward
-
-            #DEBUG
-            #env.render()
 
             #add example to batch
             example = (state, action, reward, value, done)
@@ -427,16 +431,12 @@ class A3C_Worker(object):
                 #push gradients to global_net
                 self.push_gradients(batch)
 
-                #FIXME: pull gradients from global_net
+                #pull gradients from global_net
                 self.pull_weights()
                 
                 #reset experience batch
                 batch = []
 
-        #DEBUG FIXME
-        #print 'trained for %s steps (%s)' % (t, self.global_net.get_step())
-        #print 'global trained: %s' % self.global_net.get_step()
-        #print '%s trained: %s' % (self.scope, self.local_net.get_step())
         print ('%s quit after training for %s' % (self.scope, 
                 self.local_net.get_step()))
 
@@ -450,37 +450,39 @@ class A3C_Worker(object):
     def test(self, env, episodes=100, records=4, out_dir='./logs/records'):
         #wrap env, record x episodes and eval scores
 
-        #wrapper that records episodes
-        import gym
+        #func that indicates which episodes to record and write
         vc = lambda n: n in [int(x) for x in np.linspace(episodes, 0, 
-                records)] #func that indicates which episodes to record
+                records)] 
+        #wrapper that records episodes
         env = gym.wrappers.Monitor(env, directory=out_dir, 
                 force=True, video_callable=vc)
 
-        #FIXME: pull weights from global before testing
+        #pull weights from global before testing
         self.pull_weights()
 
         #play for x episodes
-        stats = {}
-        stats['steps'] = []
+        stats = {
+            'steps': [],
+            'rewards': [],
+        }
         for i in range(episodes):
             steps = 0
             done = False
+            rewards = 0
             state = get_initial_state(env)
             while not done:
-                action, _ = self.local_net.get_action_value(state)
-                state, _, done = get_successor_state(env, action)
+                action, _ = self.local_net.get_action_value(state, 
+                        epsilon=0.0)
+                state, reward, done = get_successor_state(env, action)
+                rewards += reward
                 steps += 1
             stats['steps'].append(steps)
-        total_steps = np.asarray(stats['steps'])
-        print('%s tested for %s episodes' % (self.scope, episodes))
-        print('max: %s' % np.nanmax(total_steps))
-        print('min: %s' % np.nanmin(total_steps))
-        print('avg: %s' % np.average(total_steps))
-        print
-        print(total_steps)
-        print
+            stats['rewards'].append(rewards)
 
+        #output some stats
+        print('\n%s tested for %s episodes' % (self.scope, episodes))
+        stats = pd.DataFrame(data=stats)
+        print(stats.describe().loc[['min', 'max', 'mean', 'std']])
 
 class batch(object):
     def __init__(self):

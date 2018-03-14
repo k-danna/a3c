@@ -16,7 +16,7 @@ def main():
     
     #training vars
     worker_num = 4
-    global_train_steps = 3000
+    global_train_steps = 5000 #50000 = 1 million steps
     test = True
     env_name = 'CartPole-v0'
     #env_name = 'Pendulum-v0'
