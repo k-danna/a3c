@@ -55,7 +55,6 @@ def get_successor_state(env, action):
 
 
 #the prediction model
-
 class A3C_Net(object):
     def __init__(self, env, scope, sess, path='', seed=42, batchsize=None):
         self.path = path
@@ -94,9 +93,6 @@ class A3C_Net(object):
                 self.action_in = tf.placeholder(tf.int32, [batchsize],
                         name='action_in')
                 action_in = tf.one_hot(self.action_in, n_actions)
-                #value input
-                self.value_in = tf.placeholder(tf.float32, [batchsize],
-                        name='value_in')
                 #reward input
                 self.reward_in = tf.placeholder(tf.float32, [batchsize],
                         name='reward_in')
@@ -104,6 +100,7 @@ class A3C_Net(object):
                 self.advantage_in = tf.placeholder(tf.float32, [batchsize],
                         name='advantage_in')
 
+            '''
             #3x3 conv2d, relu, 2x2 maxpool
             with tf.name_scope('conv_pool'):
                 #filter shape = [height, width, in_channels, 
@@ -119,17 +116,17 @@ class A3C_Net(object):
                 relu = tf.nn.relu(conv + conv_b)
                 pool = tf.nn.max_pool(relu, ksize=[1,2,2,1], 
                         strides=[1,2,2,1], padding='SAME')
-
+            '''
             #FIXME: add dynamic lstm?
 
             #fully connected with dropout
             with tf.name_scope('dense_dropout'):
                 #flatten input
-                flat = tf.contrib.layers.flatten(pool)
+                flat = tf.contrib.layers.flatten(state_square)
 
                 #FIXME: n
-                n = 1024
-                w_shape = [int(flat.shape[1]), n]
+                n = 512
+                w_shape = [flat.get_shape()[-1].value, n]
                 fc_w = tf.Variable(tf.truncated_normal(w_shape, 
                         stddev=0.1), name='weight')
                 fc_b = tf.Variable(tf.constant(0.1, 
@@ -148,8 +145,13 @@ class A3C_Net(object):
                 actions = tf.matmul(drop, a_w) + a_b
                 self.a_prob = tf.nn.softmax(actions)
                 a_logprob = tf.nn.log_softmax(actions)
-                a_pred =  tf.reduce_sum(tf.multiply(a_logprob, 
-                        action_in))
+                a_pred =  tf.reduce_sum(a_logprob * action_in, [1])
+
+                #entropy based exploration
+                    #FIXME: taken directly from starter agent
+                value = tf.squeeze(tf.multinomial(actions - tf.reduce_max(
+                        actions, [1], keepdims=True), 1), [1])
+                self.a_sample = tf.one_hot(value, n_actions)[0, :]
 
             #value out, predicting the state reward essentially
             with tf.name_scope('value_prediction'):
@@ -157,7 +159,8 @@ class A3C_Net(object):
                         stddev=0.1), name='weight')
                 v_b = tf.Variable(tf.constant(0.1, 
                         shape=[1]), name='bias')
-                self.v_pred = tf.matmul(drop, v_w) + v_b
+                self.v_pred = tf.reduce_sum(tf.matmul(drop, v_w) + v_b, 
+                        axis=1)
 
             #loss and optimization
                 #functions from openai universe starter agent
@@ -165,7 +168,7 @@ class A3C_Net(object):
             with tf.name_scope('loss'):
                 #value loss
                 v_loss = 0.5 * tf.reduce_sum(tf.square(
-                        self.reward_in - self.v_pred))
+                        self.v_pred - self.reward_in))
                 
                 #policy loss
                 a_loss = - tf.reduce_sum(a_pred * self.advantage_in)
@@ -174,8 +177,7 @@ class A3C_Net(object):
                 entropy = - tf.reduce_sum(self.a_prob * a_logprob)
 
                 #loss used for gradients
-                beta = 0.01 #FIXME: this is hardcoded
-                self.loss = a_loss + 0.5 * v_loss - beta * entropy
+                self.loss = a_loss + 0.5 * v_loss - entropy * 0.01
 
             #calc and clip gradients for just local variables
                 #clip to 40 idea from openai universe starter agent
@@ -183,8 +185,9 @@ class A3C_Net(object):
                     #to converge
             with tf.name_scope('calc_gradients'):
                 #optimizer
-                learn_rate = 1e-4
+                learn_rate = 1e-3
                 self.optimizer = tf.train.AdamOptimizer(learn_rate)
+                #self.optimizer = tf.train.RMSPropOptimizer(0.00025, 0.99, 0.0, 1e-6)
                 #get local collection
                 self.variables = tf.get_collection(
                         tf.GraphKeys.TRAINABLE_VARIABLES, self.scope)
@@ -226,11 +229,7 @@ class A3C_Net(object):
                     tf.summary.scalar('0_loss', self.loss),
                     tf.summary.scalar('1_v_loss', v_loss),
                     tf.summary.scalar('2_a_loss', a_loss),
-                    tf.summary.scalar('3_v_pred', tf.reduce_mean(
-                            self.v_pred)),
-                    tf.summary.scalar('4_entropy', entropy),
-                    tf.summary.scalar('5_reward_diff_sum', tf.reduce_sum(
-                            self.v_pred - self.reward_in)),
+                    tf.summary.scalar('3_entropy', entropy),
                 ]
 
             #tensorboard data
@@ -277,55 +276,39 @@ class A3C_Net(object):
             tf.reduce_sum()
         '''
 
-    def discount(self, arr, gamma):
-        #FIXME: this is taken directly from starter agent
-        #a = scipy.signal.lfilter([1], [1, -gamma], arr[::-1], axis=0)
-        #return a[::-1]
-        return arr
-
-    def process_batch(self, batch, gamma=0.99):
+    def process_batch(self, batch):
         #FIXME: this is dumb, move to using an object to store batch
         #split batch 
         imgs = []
         actions = []
         rewards = []
-        values = []
+        advantages = []
         dones = []
         for elem in batch:
             img, action, reward, value, done = elem
             imgs.append(img)
             actions.append(action)
-            rewards.append(int(reward))
-            values.append(value)
+            rewards.append(float(reward))
+            advantages.append(value) #calc advantages below
             dones.append(int(done)) #convert from bool
 
-        #extend rewards and values to be discounted
-            #note the extension is removed after discount
-        v = 0 if dones[-1] == 0 else values[-1]
-        r_extend = np.asarray(rewards + [v])
-        v_extend = np.asarray(values + [v])
-        
-        #discount rewards
-        rewards = self.discount(r_extend, gamma)[:-1]
+        #calc advantages
+        reward = 0.0
+        if not dones[-1]:
+            reward = advantages[-1]
+        for i in range(len(rewards) - 1, -1, -1): #reverse iterate
+            reward = rewards[i] + 0.99 * reward
+            rewards[i] = reward
+            advantages[i] = reward - advantages[i]
 
         #convert to np arrays
         imgs = np.asarray(imgs).astype(np.float32)
         actions = np.asarray(actions).astype(np.int32)
         rewards = np.asarray(rewards).astype(np.float32)
-        values = np.asarray(values).astype(np.float32)
+        advantages = np.asarray(advantages).astype(np.float32)
         dones = np.asarray(dones).astype(np.int32)
 
-        #calc advantages
-            #adv func taken from openai universe starter agent
-            #it is the generalized advantage estimation from
-                #https://arxiv.org/abs/1506.02438
-        advantages = rewards + gamma * v_extend[1:] - v_extend[:-1]
-
-        #discount advantages and convert to np.array
-        advantages = self.discount(advantages, gamma)[:-1]
-        advantages = np.asarray(advantages).astype(np.float32)
-
-        return imgs, actions, rewards, values, advantages, dones
+        return imgs, actions, rewards, advantages, dones
 
     def get_weights(self):
         #need to convert tensors to numpy arrays
@@ -354,7 +337,7 @@ class A3C_Net(object):
                 step = self.get_step()
 
     def calc_gradients(self, batch):
-        imgs, actions, rewards, values, advantages, _ = self.process_batch(
+        imgs, actions, rewards, advantages, _ = self.process_batch(
                 batch)
         loss, gradients, summary, step = self.sess.run([self.loss, 
                 self.gradients, self.summaries, self.inc_step], 
@@ -362,7 +345,6 @@ class A3C_Net(object):
                     self.state_in: imgs, 
                     self.action_in: actions, 
                     self.reward_in: rewards, 
-                    self.value_in: values, 
                     self.advantage_in: advantages, 
                     self.keep_prob: 0.5})
         #step = self.step_count.eval(session=self.sess)
@@ -371,27 +353,12 @@ class A3C_Net(object):
 
         return gradients
 
-    def get_action_value(self, state, keep_prob=1.0, epsilon=0.14):
-        #FIXME: choose action according to policy
-            #choose best action with probability that varies based on
-            #how close the highest rewards are
-                #ie explore more when there are similar high rated actions
-                #otherwise low chance to explore, choose best always
-                #measure entropy...
-        #epsilon = (% based on top_k values)
-            #actions,stddev = sess.run(...)
-                #run a top_k tensor and calc the stddev?
+    def get_action_value(self, state, keep_prob=0.5, explore=True):
+        action_op = self.a_sample if explore else self.a_prob
         action, value = self.sess.run([self.a_prob, self.v_pred],
                 feed_dict={self.state_in: [state], 
                 self.keep_prob: keep_prob})
-
-        #choose argmax with prob 1-epsilon
-        #choose random with prob epsilon
-        if np.random.random_sample() < epsilon:
-            return np.random.randint(0, 
-                    get_num_actions(self.env)), value[0][0]
-
-        return np.argmax(action[0]), value[0][0]
+        return np.argmax(action[0]), value[0]
 
     def get_step(self):
         return self.step_count.eval(session=self.sess)
@@ -402,20 +369,26 @@ class A3C_Net(object):
 
 
 class A3C_Worker(object):
-    def __init__(self, coordinator, global_net, local_net, scope): 
+    def __init__(self, coordinator, global_net, local_net, scope, 
+            batchsize=20): 
         self.scope = scope
         self.global_net = global_net
         self.local_net = local_net
         self.pull_weights()
-        self.update_interval = 20
+        self.batchsize = batchsize
 
     def train(self, env, global_step_max=10):
         batch = []
         state = get_initial_state(env)
+        #t = 0
+        #episode = 0
         while self.global_net.get_step() < global_step_max:
-            action, value = self.local_net.get_action_value(state, 0.5)
+            action, value = self.local_net.get_action_value(state)
             next_state, reward, done = get_successor_state(env, action)
-            reward = 0 if done else reward
+            
+            #reward update
+            value = 0 if done else value
+            #t += 1
 
             #add example to batch
             example = (state, action, reward, value, done)
@@ -424,10 +397,13 @@ class A3C_Worker(object):
             #reset if terminal state, else continue
             if done:
                 state = get_initial_state(env)
+                #print('episode %s finished in %s steps' % (episode, t))
+                #t = 0
+                #episode += 1
 
             state = next_state
 
-            if len(batch) >= self.update_interval:
+            if len(batch) >= self.batchsize:
                 #push gradients to global_net
                 self.push_gradients(batch)
 
@@ -472,7 +448,7 @@ class A3C_Worker(object):
             state = get_initial_state(env)
             while not done:
                 action, _ = self.local_net.get_action_value(state, 
-                        epsilon=0.0)
+                        keep_prob=1.0, explore=False)
                 state, reward, done = get_successor_state(env, action)
                 rewards += reward
                 steps += 1
@@ -483,48 +459,5 @@ class A3C_Worker(object):
         print('\n%s tested for %s episodes' % (self.scope, episodes))
         stats = pd.DataFrame(data=stats)
         print(stats.describe().loc[['min', 'max', 'mean', 'std']])
-
-class batch(object):
-    def __init__(self):
-        #self.rewards = []
-        #...
-        #self.gradients = []
-        pass
-
-    def reset(self):
-        #clear all values
-        pass
-
-    def get_data(self):
-        #returns vectorized input to be fed to graph
-        pass
-
-    def add(self, example):
-        #adds a train experience to batch
-        pass
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

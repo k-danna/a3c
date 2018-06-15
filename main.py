@@ -32,6 +32,7 @@ def main():
     coordinator = tf.train.Coordinator()
     sess = tf.Session()
     env = gym.make(env_name)
+    env.seed(0)
     global_net = A3C_Net(env, 'global', sess)
     for i in range(worker_num):
         name = 'worker_%s' % i
@@ -43,10 +44,10 @@ def main():
 
     #start training asynchronously
     threads = []
-    for worker in workers:
+    for i,worker in enumerate(workers):
         #lambda so we can avoid passing args to thread call
         env = gym.make(env_name)
-        env.seed(42)
+        env.seed(i)
         work = lambda: worker.train(env, global_train_steps)
         thread = Thread(target=work)
         #thread.daemon = True
@@ -72,7 +73,9 @@ def main():
 
     #test
     if test:
-        for worker in workers:
+        for i, worker in enumerate(workers):
+            env = gym.make(env_name)
+            env.seed(i)
             worker.test(gym.make(env_name))
 
     env.close()
