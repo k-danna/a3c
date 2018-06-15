@@ -1,6 +1,6 @@
 #a3c
 
-i started this project before i had a working version of a2c. this repo will be rewritten soon
+i started this as a quick investigative day-project before i had a working version of a2c, so the code is a little messy and some things are designed poorly. this repo will be rewritten to clean things up, optimize, etc soon
 
 unfinished: there is currently a bug with passing gradients between threads
       (compiles bug free but does not learn)
