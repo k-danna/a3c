@@ -2,8 +2,6 @@
 
 import sys, os
 from threading import Thread
-sys.dont_write_bytecode = True
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import gym
 import threading
@@ -16,7 +14,7 @@ def main():
     
     #training vars
     worker_num = 4
-    global_train_steps = 5000 #50000 = 1 million steps
+    global_train_steps = 1000 #50000 = 1 million steps
     test = True
     env_name = 'CartPole-v0'
     #env_name = 'Pendulum-v0'

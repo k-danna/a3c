@@ -10,7 +10,6 @@ import gym
 
 #FIXME: move these to the net
 #some quick wrapper methods for the state
-    #easily enables handling a large variety of inputs
 
 def process_state(state):
 
@@ -124,7 +123,7 @@ class A3C_Net(object):
                 #flatten input
                 flat = tf.contrib.layers.flatten(state_square)
 
-                #FIXME: n
+                #FIXME: n hardcoded
                 n = 512
                 w_shape = [flat.get_shape()[-1].value, n]
                 fc_w = tf.Variable(tf.truncated_normal(w_shape, 
@@ -136,24 +135,28 @@ class A3C_Net(object):
                 self.keep_prob = tf.placeholder(tf.float32)
                 drop = tf.nn.dropout(fc_relu, self.keep_prob)
 
-            #policy out, aka action values
+            #policy out
             with tf.name_scope('action_prediction'):
                 a_w = tf.Variable(tf.truncated_normal([n, n_actions], 
                         stddev=0.1), name='weight')
                 a_b = tf.Variable(tf.constant(0.1, 
                         shape=[n_actions]), name='bias')
-                actions = tf.matmul(drop, a_w) + a_b
-                self.a_prob = tf.nn.softmax(actions)
-                a_logprob = tf.nn.log_softmax(actions)
+                logits = tf.matmul(drop, a_w) + a_b
+                self.a_prob = tf.nn.softmax(logits)
+                a_logprob = tf.nn.log_softmax(logits)
                 a_pred =  tf.reduce_sum(a_logprob * action_in, [1])
 
-                #entropy based exploration
-                    #FIXME: taken directly from starter agent
-                value = tf.squeeze(tf.multinomial(actions - tf.reduce_max(
-                        actions, [1], keepdims=True), 1), [1])
-                self.a_sample = tf.one_hot(value, n_actions)[0, :]
+                #exploration used in openai starter agent
+                logits_max = tf.reduce_max(logits, [1], keepdims=True)
+                dist = logits - logits_max
 
-            #value out, predicting the state reward essentially
+                #simple exploration
+                #dist = a_logprob
+
+                action_random = tf.multinomial(dist, 1)
+                self.a_explore = tf.one_hot(action_random, n_actions)[0, :]
+
+            #value out
             with tf.name_scope('value_prediction'):
                 v_w = tf.Variable(tf.truncated_normal([n, 1], 
                         stddev=0.1), name='weight')
@@ -180,12 +183,9 @@ class A3C_Net(object):
                 self.loss = a_loss + 0.5 * v_loss - entropy * 0.01
 
             #calc and clip gradients for just local variables
-                #clip to 40 idea from openai universe starter agent
-                #should be set to 1/10 of max value that allows net 
-                    #to converge
             with tf.name_scope('calc_gradients'):
                 #optimizer
-                learn_rate = 1e-3
+                learn_rate = 1e-4
                 self.optimizer = tf.train.AdamOptimizer(learn_rate)
                 #self.optimizer = tf.train.RMSPropOptimizer(0.00025, 0.99, 0.0, 1e-6)
                 #get local collection
@@ -246,35 +246,6 @@ class A3C_Net(object):
         self.sess.run(init_op)
 
         print ('[+] %s net initialized' % self.scope)
-
-        '''
-        #FIXME: ref
-        process_rollout(rollout, gamma, lambda_=1.0)
-            batch_si = states
-            batch_a = actions
-            
-            rewards = rewards
-            rewards_plus_v = rewards + [rollout.r]
-            batch_r = discount(rewards_plus_v, gamma)[:-1]
-            
-            delta_t = rewards + gamma * values - values
-            batch_adv = discount(delta_t, gamma * lambda_)
-
-            discount(x, gamma)
-                return lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
-
-        feed
-            self.local_network.x: batch.si
-            self.ac: batch.a
-            self.adv: batch.adv
-            self.r: batch.r
-
-        paper advantage function
-            sum of discounted rewards?
-            gamma = discount (0,1]
-            sum i=0 to k [gamma^i * reward_i+1 + gamma^k * V(s_t+k) - V(s_t)]
-            tf.reduce_sum()
-        '''
 
     def process_batch(self, batch):
         #FIXME: this is dumb, move to using an object to store batch
@@ -347,14 +318,13 @@ class A3C_Net(object):
                     self.reward_in: rewards, 
                     self.advantage_in: advantages, 
                     self.keep_prob: 0.5})
-        #step = self.step_count.eval(session=self.sess)
         #print ('%s step: %s' % (self.scope, step))
         self.writer.add_summary(summary, step)
 
         return gradients
 
     def get_action_value(self, state, keep_prob=0.5, explore=True):
-        action_op = self.a_sample if explore else self.a_prob
+        action_op = self.a_explore if explore else self.a_prob
         action, value = self.sess.run([self.a_prob, self.v_pred],
                 feed_dict={self.state_in: [state], 
                 self.keep_prob: keep_prob})
